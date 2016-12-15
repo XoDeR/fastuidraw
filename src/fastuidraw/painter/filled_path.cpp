@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <ctime>
 #include <math.h>
+#include <boost/dynamic_bitset.hpp>
 
 #include <fastuidraw/tessellated_path.hpp>
 #include <fastuidraw/path.hpp>
@@ -174,8 +175,10 @@ namespace
     public fastuidraw::reference_counted<per_winding_data>::non_concurrent
   {
   public:
-    per_winding_data(void):
-      m_count(0)
+    explicit
+    per_winding_data(int pwinding_number):
+      m_count(0),
+      m_winding_number(pwinding_number)
     {}
 
     void
@@ -189,6 +192,12 @@ namespace
     count(void) const
     {
       return m_count;
+    }
+
+    int
+    winding_number(void) const
+    {
+      return m_winding_number;
     }
 
     void
@@ -205,6 +214,7 @@ namespace
   private:
     std::list<unsigned int> m_indices;
     unsigned int m_count;
+    int m_winding_number;
   };
 
   typedef std::map<int, fastuidraw::reference_counted_ptr<per_winding_data> > winding_index_hoard;
@@ -425,6 +435,51 @@ namespace
     int m_winding_start;
   };
 
+  class WindingSet
+  {
+  public:
+    WindingSet(void):
+      m_begin(0),
+      m_end(0)
+    {}
+
+    // set to encode the -complement- of the passed fill rule.
+    WindingSet(int min_value, int max_value,
+               const fastuidraw::CustomFillRuleBase &fill_rule);
+
+    void
+    extract_from_set(const std::set<int> &in_values);
+
+    bool
+    have_common_bit(const WindingSet &obj) const;
+
+    int
+    begin(void) const
+    {
+      return m_begin;
+    }
+
+    int
+    end(void) const
+    {
+      return m_end;
+    }
+
+    bool
+    has(int w) const;
+
+  private:
+    boost::dynamic_bitset<> m_bits;
+    int m_begin, m_end;
+  };
+
+  class FillPoint
+  {
+  public:
+    fastuidraw::vec2 m_pt;
+    std::set<int> m_winding;
+  };
+
   class PointHoard:fastuidraw::noncopyable
   {
   public:
@@ -434,7 +489,7 @@ namespace
 
     explicit
     PointHoard(const fastuidraw::BoundingBox &bounds,
-               std::vector<fastuidraw::vec2> &pts):
+               std::vector<FillPoint> &pts):
       m_converter(bounds.min_point(), bounds.max_point()),
       m_pts(pts)
     {
@@ -452,13 +507,20 @@ namespace
     operator[](unsigned int v) const
     {
       assert(v < m_pts.size());
-      return m_pts[v];
+      return m_pts[v].m_pt;
     }
 
     const CoordinateConverter&
     converter(void) const
     {
       return m_converter;
+    }
+
+    void
+    add_to_winding_set(unsigned int v, int winding)
+    {
+      assert(v < m_pts.size());
+      m_pts[v].m_winding.insert(winding);
     }
 
   private:
@@ -477,7 +539,7 @@ namespace
 
     CoordinateConverter m_converter;
     std::map<fastuidraw::ivec2, unsigned int> m_map;
-    std::vector<fastuidraw::vec2> &m_pts;
+    std::vector<FillPoint> &m_pts;
   };
 
   class tesser:fastuidraw::noncopyable
@@ -522,8 +584,14 @@ namespace
     FASTUIDRAW_GLUboolean
     fill_region(int winding_number) = 0;
 
-  private:
+  protected:
+    void
+    add_to_winding_set(unsigned int v, int winding)
+    {
+      m_points.add_to_winding_set(v, winding);
+    }
 
+  private:
     void
     add_contour(const PointHoard::Contour &C);
 
@@ -644,7 +712,7 @@ namespace
   {
   public:
     explicit
-    builder(const SubPath &P, std::vector<fastuidraw::vec2> &pts);
+    builder(const SubPath &P, std::vector<FillPoint> &pts);
 
     ~builder();
 
@@ -692,13 +760,19 @@ namespace
               fastuidraw::c_array<unsigned int> zincrements,
               fastuidraw::c_array<int> index_adjusts) const;
 
+    static
+    void
+    fill_winding_data(const std::vector<WindingSet> &a,
+                      const std::vector<WindingSet> &b,
+                      std::vector<WindingSet> &dst);
+
     const fastuidraw::PainterAttributeData &m_a, &m_b;
   };
 
   class AttributeDataFiller:public fastuidraw::PainterAttributeDataFiller
   {
   public:
-    std::vector<fastuidraw::vec2> m_points;
+    std::vector<FillPoint> m_points;
 
     /* Carefully organize indices as follows:
        - first all elements with odd winding number
@@ -738,13 +812,16 @@ namespace
               fastuidraw::c_array<unsigned int> zincrements,
               fastuidraw::c_array<int> index_adjusts) const;
 
+    void
+    fill_winding_data(std::vector<WindingSet> &dst) const;
+
     static
     fastuidraw::PainterAttribute
-    generate_attribute(const fastuidraw::vec2 &src)
+    generate_attribute(const FillPoint &src)
     {
       fastuidraw::PainterAttribute dst;
 
-      dst.m_attrib0 = fastuidraw::pack_vec4(src.x(), src.y(), 0.0f, 0.0f);
+      dst.m_attrib0 = fastuidraw::pack_vec4(src.m_pt.x(), src.m_pt.y(), 0.0f, 0.0f);
       dst.m_attrib1 = fastuidraw::uvec4(0u, 0u, 0u, 0u);
       dst.m_attrib2 = fastuidraw::uvec4(0u, 0u, 0u, 0u);
 
@@ -795,6 +872,12 @@ namespace
       return *m_painter_data;
     }
 
+    const std::vector<WindingSet>&
+    windings_per_pt(void) const
+    {
+      return m_windings_per_pt;
+    }
+
   private:
     void
     select_subsets_implement(ScratchSpacePrivate &scratch,
@@ -837,6 +920,11 @@ namespace
     fastuidraw::PainterAttributeData *m_painter_data;
     std::vector<int> m_winding_numbers;
 
+    /* for each point (indexed as in m_painter_data),
+       we store what winding values each vertex has
+     */
+    std::vector<WindingSet> m_windings_per_pt;
+
     bool m_sizes_ready;
     unsigned int m_num_attributes;
     unsigned int m_largest_index_block;
@@ -848,6 +936,28 @@ namespace
      */
     SubPath *m_sub_path;
     fastuidraw::vecN<SubsetPrivate*, 2> m_children;
+  };
+
+  class DataWriterPrivate
+  {
+  public:
+    class per_index_chunk
+    {
+    public:
+      fastuidraw::const_c_array<fastuidraw::PainterIndex> m_indices;
+      unsigned int m_attrib_chunk;
+    };
+
+    class per_attrib_chunk
+    {
+    public:
+      fastuidraw::const_c_array<fastuidraw::PainterAttribute> m_attribs;
+      fastuidraw::const_c_array<WindingSet> m_per_pt_winding_set;
+    };
+
+    std::vector<per_attrib_chunk> m_attribute_chunks;
+    std::vector<per_index_chunk> m_index_chunks;
+    WindingSet m_complement_winding_rule;
   };
 
   class FilledPathPrivate
@@ -1250,8 +1360,10 @@ fetch(const fastuidraw::vec2 &pt)
     }
   else
     {
+      FillPoint p;
       return_value = m_pts.size();
-      m_pts.push_back(pt);
+      p.m_pt = pt;
+      m_pts.push_back(p);
       m_map[ipt] = return_value;
     }
   return return_value;
@@ -1659,9 +1771,23 @@ vertex_callBack(unsigned int vertex_id, void *tess)
          && p->m_temp_verts[2] != FASTUIDRAW_GLU_NULL_CLIENT_ID
          && p->temp_verts_non_degenerate_triangle())
         {
-          p->add_vertex_to_polygon(p->m_temp_verts[0]);
-          p->add_vertex_to_polygon(p->m_temp_verts[1]);
-          p->add_vertex_to_polygon(p->m_temp_verts[2]);
+          fastuidraw::vec2 p0(p->m_points[p->m_temp_verts[0]]);
+          fastuidraw::vec2 p1(p->m_points[p->m_temp_verts[1]]);
+          fastuidraw::vec2 p2(p->m_points[p->m_temp_verts[2]]);
+          fastuidraw::vec2 c;
+          unsigned int ic;
+
+          c = (p0 + p1 + p2) / 3.0f;
+          ic = p->m_points.fetch(c);
+
+          /* add 3 triangles: [c, p1, p2], [p0, c, p2] and [p0, p1, c]
+           */
+          for(unsigned int t = 0; t < 3; ++t)
+            {
+              p->add_vertex_to_polygon((t != 0) ? p->m_temp_verts[0] : ic);
+              p->add_vertex_to_polygon((t != 1) ? p->m_temp_verts[1] : ic);
+              p->add_vertex_to_polygon((t != 2) ? p->m_temp_verts[2] : ic);
+            }
         }
     }
 }
@@ -1733,7 +1859,7 @@ on_begin_polygon(int winding_number)
       m_current_winding = winding_number;
       if(!h)
         {
-          h = FASTUIDRAWnew per_winding_data();
+          h = FASTUIDRAWnew per_winding_data(winding_number);
         }
       m_current_indices = h;
     }
@@ -1744,6 +1870,7 @@ non_zero_tesser::
 add_vertex_to_polygon(unsigned int vertex)
 {
   m_current_indices->add_index(vertex);
+  add_to_winding_set(vertex, m_current_indices->winding_number());
 }
 
 
@@ -1769,7 +1896,7 @@ zero_tesser(PointHoard &points,
 {
   if(!m_indices)
     {
-      m_indices = FASTUIDRAWnew per_winding_data();
+      m_indices = FASTUIDRAWnew per_winding_data(path.winding_start());
     }
 
   start();
@@ -1792,6 +1919,7 @@ zero_tesser::
 add_vertex_to_polygon(unsigned int vertex)
 {
   m_indices->add_index(vertex);
+  add_to_winding_set(vertex, m_indices->winding_number());
 }
 
 FASTUIDRAW_GLUboolean
@@ -1806,7 +1934,7 @@ fill_region(int winding_number)
 /////////////////////////////////////////
 // builder methods
 builder::
-builder(const SubPath &P, std::vector<fastuidraw::vec2> &points):
+builder(const SubPath &P, std::vector<FillPoint> &points):
   m_points(P.bounds(), points)
 {
   bool failZ, failNZ;
@@ -1908,6 +2036,19 @@ fill_indices(std::vector<unsigned int> &indices,
 // AttributeDataMerger methods
 void
 AttributeDataMerger::
+fill_winding_data(const std::vector<WindingSet> &a,
+                  const std::vector<WindingSet> &b,
+                  std::vector<WindingSet> &dst)
+{
+  unsigned int a_size(a.size()), b_size(b.size());
+
+  dst.resize(a_size + b_size);
+  std::copy(a.begin(), a.end(), dst.begin());
+  std::copy(b.begin(), b.end(), dst.begin() + a_size);
+}
+
+void
+AttributeDataMerger::
 compute_sizes(unsigned int &number_attributes,
               unsigned int &number_indices,
               unsigned int &number_attribute_chunks,
@@ -1929,7 +2070,6 @@ compute_sizes(unsigned int &number_attributes,
       number_indices += (a_sz + b_sz);
     }
 }
-
 
 void
 AttributeDataMerger::
@@ -2114,6 +2254,80 @@ fill_data(fastuidraw::c_array<fastuidraw::PainterAttribute> attributes,
           index_chunks[idx] = dst;
           current += dst.size();
         }
+    }
+}
+
+void
+AttributeDataFiller::
+fill_winding_data(std::vector<WindingSet> &dst) const
+{
+  dst.resize(m_points.size());
+  for(unsigned int v = 0, endv = dst.size(); v < endv; ++v)
+    {
+      dst[v].extract_from_set(m_points[v].m_winding);
+    }
+}
+
+//////////////////////////////////
+// WindingSet methods
+WindingSet::
+WindingSet(int min_value, int max_value,
+           const fastuidraw::CustomFillRuleBase &fill_rule):
+  m_begin(min_value),
+  m_end(max_value + 1)
+{
+  assert(m_begin <= m_end);
+
+  m_bits.resize(m_end - m_begin, false);
+  for(int w = m_begin; w < m_end; ++w)
+    {
+      m_bits.set(w - m_begin, !fill_rule(w));
+    }
+}
+
+bool
+WindingSet::
+have_common_bit(const WindingSet &obj) const
+{
+  for(int w = fastuidraw::t_max(m_begin, obj.m_begin),
+        endw = fastuidraw::t_min(m_end, obj.m_end);
+      w < endw; ++w)
+    {
+      if(m_bits.test(w - m_begin) && obj.m_bits.test(w - obj.m_begin))
+        {
+          return true;
+        }
+    }
+  return false;
+}
+
+bool
+WindingSet::
+has(int w) const
+{
+  assert(w < m_begin || w >= m_end || (w - m_begin) <= static_cast<int>(m_bits.size()));
+  return (w >= m_begin && w < m_end) ?
+    m_bits.test(w - m_begin) : false;
+}
+
+void
+WindingSet::
+extract_from_set(const std::set<int> &in_values)
+{
+  m_bits.clear();
+  if(in_values.empty())
+    {
+      m_begin = m_end = 0;
+      return;
+    }
+
+  m_begin = *in_values.begin();
+  m_end = *in_values.rbegin() + 1;
+  m_bits.resize(m_end - m_begin, false);
+  for(std::set<int>::const_iterator iter = in_values.begin(),
+        end = in_values.end(); iter != end; ++iter)
+    {
+      m_bits.set(*iter - m_begin, true);
     }
 }
 
@@ -2314,6 +2528,9 @@ make_ready_from_children(void)
 
   m_painter_data = FASTUIDRAWnew fastuidraw::PainterAttributeData();
   m_painter_data->set_data(merger);
+  AttributeDataMerger::fill_winding_data(m_children[0]->windings_per_pt(),
+                                         m_children[1]->windings_per_pt(),
+                                         m_windings_per_pt);
 
   std::copy(m_children[0]->winding_numbers().begin(),
             m_children[0]->winding_numbers().end(),
@@ -2380,6 +2597,8 @@ make_ready_from_sub_path(void)
   m_painter_data = FASTUIDRAWnew fastuidraw::PainterAttributeData();
   m_painter_data->set_data(filler);
 
+  filler.fill_winding_data(m_windings_per_pt);
+
   FASTUIDRAWdelete(m_sub_path);
   m_sub_path = NULL;
 
@@ -2429,6 +2648,124 @@ fastuidraw::FilledPath::ScratchSpace::
   d = reinterpret_cast<ScratchSpacePrivate*>(m_d);
   FASTUIDRAWdelete(d);
   m_d = NULL;
+}
+
+/////////////////////////////////////////////
+// fastuidraw::FilledPath::DataWriter methods
+fastuidraw::FilledPath::DataWriter::
+DataWriter(void)
+{
+  m_d = FASTUIDRAWnew DataWriterPrivate();
+}
+
+fastuidraw::FilledPath::DataWriter::
+~DataWriter(void)
+{
+  DataWriterPrivate *d;
+  d = reinterpret_cast<DataWriterPrivate*>(m_d);
+  FASTUIDRAWdelete(d);
+  m_d = NULL;
+}
+
+unsigned int
+fastuidraw::FilledPath::DataWriter::
+number_attribute_chunks(void) const
+{
+  DataWriterPrivate *d;
+  d = reinterpret_cast<DataWriterPrivate*>(m_d);
+  return d->m_attribute_chunks.size();
+}
+
+unsigned int
+fastuidraw::FilledPath::DataWriter::
+number_attributes(unsigned int attribute_chunk) const
+{
+  DataWriterPrivate *d;
+  d = reinterpret_cast<DataWriterPrivate*>(m_d);
+  assert(attribute_chunk < d->m_attribute_chunks.size());
+  return d->m_attribute_chunks[attribute_chunk].m_attribs.size();
+}
+
+unsigned int
+fastuidraw::FilledPath::DataWriter::
+number_index_chunks(void) const
+{
+  DataWriterPrivate *d;
+  d = reinterpret_cast<DataWriterPrivate*>(m_d);
+  return d->m_index_chunks.size();
+}
+
+unsigned int
+fastuidraw::FilledPath::DataWriter::
+number_indices(unsigned int index_chunk) const
+{
+  DataWriterPrivate *d;
+  d = reinterpret_cast<DataWriterPrivate*>(m_d);
+  assert(index_chunk < d->m_index_chunks.size());
+  return d->m_index_chunks[index_chunk].m_indices.size();
+}
+
+unsigned int
+fastuidraw::FilledPath::DataWriter::
+attribute_chunk_selection(unsigned int index_chunk) const
+{
+  DataWriterPrivate *d;
+  d = reinterpret_cast<DataWriterPrivate*>(m_d);
+  assert(index_chunk < d->m_index_chunks.size());
+  return d->m_index_chunks[index_chunk].m_attrib_chunk;
+}
+
+void
+fastuidraw::FilledPath::DataWriter::
+write_indices(c_array<PainterIndex> dst,
+              unsigned int index_offset_value,
+              unsigned int index_chunk) const
+{
+  const_c_array<PainterIndex> src;
+  DataWriterPrivate *d;
+  d = reinterpret_cast<DataWriterPrivate*>(m_d);
+
+  assert(index_chunk < d->m_index_chunks.size());
+  src = d->m_index_chunks[index_chunk].m_indices;
+
+  assert(dst.size() == src.size());
+  for(unsigned int i = 0; i < dst.size(); ++i)
+    {
+      dst[i] = src[i] + index_offset_value;
+    }
+}
+
+void
+fastuidraw::FilledPath::DataWriter::
+write_attributes(c_array<PainterAttribute> dst,
+                 unsigned int attribute_chunk) const
+{
+  const_c_array<PainterAttribute> src;
+  const_c_array<WindingSet> w_src;
+  DataWriterPrivate *d;
+
+  d = reinterpret_cast<DataWriterPrivate*>(m_d);
+
+  assert(attribute_chunk < d->m_attribute_chunks.size());
+  src = d->m_attribute_chunks[attribute_chunk].m_attribs;
+  w_src = d->m_attribute_chunks[attribute_chunk].m_per_pt_winding_set;
+
+  assert(dst.size() == src.size());
+  for(unsigned int i = 0; i < dst.size(); ++i)
+    {
+      /* each attribute v has a bitset giving the set
+         S(v) that is the set of all winding numbers w
+         for which there is a triangle T which uses v
+         as a vertex and whose winding number is w.
+
+         A vertex v is on the boundary if there is a
+         value w of S(v) which is not to be filled.
+      */
+      dst[i].m_attrib0.x() = src[i].m_attrib0.x();
+      dst[i].m_attrib0.y() = src[i].m_attrib0.y();
+      dst[i].m_attrib0.z() = d->m_complement_winding_rule.have_common_bit(w_src[i]) ?
+        1u : 0u;
+    }
 }
 
 /////////////////////////////////
