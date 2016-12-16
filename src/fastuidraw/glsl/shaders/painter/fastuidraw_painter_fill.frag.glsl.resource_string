@@ -2,5 +2,19 @@ vec4
 fastuidraw_gl_frag_main(in uint sub_shader,
                         in uint shader_data_offset)
 {
-  return vec4(1.0, 1.0, 1.0, 1.0);
+  #ifdef FASTUIDRAW_FILL_SHADER_AA
+    {
+      float dd;
+
+      dd = fastuidraw_anisotropic_coverage(fastuidraw_painter_fill_inside,
+                                           dFdx(fastuidraw_painter_fill_inside),
+                                           dFdy(fastuidraw_painter_fill_inside));
+
+      return vec4(1.0, 1.0, 1.0, dd);
+    }
+  #else
+    {
+      return vec4(1.0, 1.0, 1.0, 1.0);
+    }
+  #endif
 }
