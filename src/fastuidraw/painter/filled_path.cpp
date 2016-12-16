@@ -443,9 +443,17 @@ namespace
       m_end(0)
     {}
 
+    void
+    clear(void)
+    {
+      m_begin = m_end = 0;
+      m_bits.clear();
+    }
+
     // set to encode the -complement- of the passed fill rule.
-    WindingSet(int min_value, int max_value,
-               const fastuidraw::CustomFillRuleBase &fill_rule);
+    void
+    extract_compliment_from_fill_fule(int min_value, int max_value,
+                                      const fastuidraw::CustomFillRuleBase &fill_rule);
 
     void
     extract_from_set(const std::set<int> &in_values);
@@ -859,14 +867,14 @@ namespace
     make_ready(void);
 
     fastuidraw::const_c_array<int>
-    winding_numbers(void)
+    winding_numbers(void) const
     {
       assert(m_painter_data != NULL);
       return fastuidraw::make_c_array(m_winding_numbers);
     }
 
-    const fastuidraw::PainterAttributeData &
-    painter_data(void)
+    const fastuidraw::PainterAttributeData&
+    painter_data(void) const
     {
       assert(m_painter_data != NULL);
       return *m_painter_data;
@@ -944,6 +952,13 @@ namespace
     class per_index_chunk
     {
     public:
+      explicit
+      per_index_chunk(fastuidraw::const_c_array<fastuidraw::PainterIndex> indices,
+                      unsigned int attrib_chunk):
+        m_indices(indices),
+        m_attrib_chunk(attrib_chunk)
+      {}
+
       fastuidraw::const_c_array<fastuidraw::PainterIndex> m_indices;
       unsigned int m_attrib_chunk;
     };
@@ -951,10 +966,17 @@ namespace
     class per_attrib_chunk
     {
     public:
+      explicit
+      per_attrib_chunk(const SubsetPrivate *d):
+        m_attribs(d->painter_data().attribute_data_chunk(0)),
+        m_per_pt_winding_set(fastuidraw::make_c_array(d->windings_per_pt()))
+      {}
+
       fastuidraw::const_c_array<fastuidraw::PainterAttribute> m_attribs;
       fastuidraw::const_c_array<WindingSet> m_per_pt_winding_set;
     };
 
+    std::vector<unsigned int> m_subset_selector;
     std::vector<per_attrib_chunk> m_attribute_chunks;
     std::vector<per_index_chunk> m_index_chunks;
     WindingSet m_complement_winding_rule;
@@ -2270,18 +2292,40 @@ fill_winding_data(std::vector<WindingSet> &dst) const
 
 //////////////////////////////////
 // WindingSet methods
+void
 WindingSet::
-WindingSet(int min_value, int max_value,
-           const fastuidraw::CustomFillRuleBase &fill_rule):
-  m_begin(min_value),
-  m_end(max_value + 1)
+extract_compliment_from_fill_fule(int min_value, int max_value,
+                                  const fastuidraw::CustomFillRuleBase &fill_rule)
 {
+  m_begin = min_value;
+  m_end = max_value + 1;
   assert(m_begin <= m_end);
 
   m_bits.resize(m_end - m_begin, false);
   for(int w = m_begin; w < m_end; ++w)
     {
       m_bits.set(w - m_begin, !fill_rule(w));
+    }
+}
+
+void
+WindingSet::
+extract_from_set(const std::set<int> &in_values)
+{
+  m_bits.clear();
+  if(in_values.empty())
+    {
+      m_begin = m_end = 0;
+      return;
+    }
+
+  m_begin = *in_values.begin();
+  m_end = *in_values.rbegin() + 1;
+  m_bits.resize(m_end - m_begin, false);
+  for(std::set<int>::const_iterator iter = in_values.begin(),
+        end = in_values.end(); iter != end; ++iter)
+    {
+      m_bits.set(*iter - m_begin, true);
     }
 }
 
@@ -2308,27 +2352,6 @@ has(int w) const
   assert(w < m_begin || w >= m_end || (w - m_begin) <= static_cast<int>(m_bits.size()));
   return (w >= m_begin && w < m_end) ?
     m_bits.test(w - m_begin) : false;
-}
-
-void
-WindingSet::
-extract_from_set(const std::set<int> &in_values)
-{
-  m_bits.clear();
-  if(in_values.empty())
-    {
-      m_begin = m_end = 0;
-      return;
-    }
-
-  m_begin = *in_values.begin();
-  m_end = *in_values.rbegin() + 1;
-  m_bits.resize(m_end - m_begin, false);
-  for(std::set<int>::const_iterator iter = in_values.begin(),
-        end = in_values.end(); iter != end; ++iter)
-    {
-      m_bits.set(*iter - m_begin, true);
-    }
 }
 
 /////////////////////////////////
@@ -2659,12 +2682,39 @@ DataWriter(void)
 }
 
 fastuidraw::FilledPath::DataWriter::
+DataWriter(const DataWriter &obj)
+{
+  DataWriterPrivate *d;
+  d = reinterpret_cast<DataWriterPrivate*>(obj.m_d);
+  m_d = FASTUIDRAWnew DataWriterPrivate(*d);
+}
+
+fastuidraw::FilledPath::DataWriter::
 ~DataWriter(void)
 {
   DataWriterPrivate *d;
   d = reinterpret_cast<DataWriterPrivate*>(m_d);
   FASTUIDRAWdelete(d);
   m_d = NULL;
+}
+
+const fastuidraw::FilledPath::DataWriter&
+fastuidraw::FilledPath::DataWriter::
+operator=(const DataWriter &rhs)
+{
+  if(&rhs != this)
+    {
+      DataWriter tmp(rhs);
+      swap(tmp);
+    }
+  return *this;
+}
+
+void
+fastuidraw::FilledPath::DataWriter::
+swap(DataWriter &obj)
+{
+  std::swap(obj.m_d, m_d);
 }
 
 unsigned int
@@ -2753,6 +2803,9 @@ write_attributes(c_array<PainterAttribute> dst,
   assert(dst.size() == src.size());
   for(unsigned int i = 0; i < dst.size(); ++i)
     {
+      bool outside;
+      float value;
+
       /* each attribute v has a bitset giving the set
          S(v) that is the set of all winding numbers w
          for which there is a triangle T which uses v
@@ -2763,8 +2816,10 @@ write_attributes(c_array<PainterAttribute> dst,
       */
       dst[i].m_attrib0.x() = src[i].m_attrib0.x();
       dst[i].m_attrib0.y() = src[i].m_attrib0.y();
-      dst[i].m_attrib0.z() = d->m_complement_winding_rule.have_common_bit(w_src[i]) ?
-        1u : 0u;
+
+      outside = d->m_complement_winding_rule.have_common_bit(w_src[i]);
+      value = (outside) ? 0.0f: 1.0f;
+      dst[i].m_attrib0.z() = pack_float(value);
     }
 }
 
@@ -2898,9 +2953,93 @@ select_subsets(ScratchSpace &work_room,
          thread safe (with regards to the SubsetPrivate
          being made ready via make_ready()).
    */
-  return_value= d->m_root->select_subsets(*static_cast<ScratchSpacePrivate*>(work_room.m_d),
-                                          clip_equations, clip_matrix_local,
-                                          max_attribute_cnt, max_index_cnt, dst);
+  return_value = d->m_root->select_subsets(*static_cast<ScratchSpacePrivate*>(work_room.m_d),
+                                           clip_equations, clip_matrix_local,
+                                           max_attribute_cnt, max_index_cnt, dst);
 
   return return_value;
+}
+
+
+void
+fastuidraw::FilledPath::
+compute_writer(ScratchSpace &scratch_space,
+               const CustomFillRuleBase &fill_rule,
+               const_c_array<vec3> clip_equations,
+               const float3x3 &clip_matrix_local,
+               unsigned int max_attribute_cnt,
+               unsigned int max_index_cnt,
+               DataWriter &dst) const
+{
+  DataWriterPrivate *dst_d;
+  unsigned int num;
+
+  dst_d = reinterpret_cast<DataWriterPrivate*>(dst.m_d);
+
+  dst_d->m_attribute_chunks.clear();
+  dst_d->m_index_chunks.clear();
+  dst_d->m_complement_winding_rule.clear();
+
+  dst_d->m_subset_selector.resize(number_subsets());
+  num = select_subsets(scratch_space, clip_equations, clip_matrix_local,
+                       max_attribute_cnt, max_index_cnt,
+                       make_c_array(dst_d->m_subset_selector));
+
+  if(num == 0)
+    {
+      return;
+    }
+
+  Subset S(subset(dst_d->m_subset_selector[0]));
+  int min_winding, max_winding;
+
+  min_winding = S.winding_numbers().front();
+  max_winding = S.winding_numbers().back();
+  for(unsigned int i = 1; i < num; ++i)
+    {
+      S = subset(dst_d->m_subset_selector[i]);
+      min_winding = t_min(min_winding, S.winding_numbers().front());
+      max_winding = t_max(max_winding, S.winding_numbers().back());
+    }
+
+  dst_d->m_complement_winding_rule.extract_compliment_from_fill_fule(min_winding, max_winding, fill_rule);
+  dst_d->m_attribute_chunks.reserve(num);
+  dst_d->m_index_chunks.reserve(num);
+
+  for(unsigned int i = 0; i < num; ++i)
+    {
+      SubsetPrivate *sd;
+      const_c_array<int> windings;
+      const unsigned int ATTRIB_CHUNK_NOT_TAKEN = ~0u;
+      unsigned int attrib_chunk;
+
+      S = subset(dst_d->m_subset_selector[i]);
+      sd = reinterpret_cast<SubsetPrivate*>(S.m_d);
+      windings = sd->winding_numbers();
+      attrib_chunk = ATTRIB_CHUNK_NOT_TAKEN;
+
+      for(unsigned int i = 0; i < windings.size(); ++i)
+        {
+          int w;
+
+          w = windings[i];
+          if(!dst_d->m_complement_winding_rule.has(w))
+            {
+              unsigned int index_chunk;
+              const_c_array<PainterIndex> indices;
+
+              if(attrib_chunk == ATTRIB_CHUNK_NOT_TAKEN)
+                {
+                  attrib_chunk = dst_d->m_attribute_chunks.size();
+                  dst_d->m_attribute_chunks.push_back(DataWriterPrivate::per_attrib_chunk(sd));
+                }
+
+              index_chunk = Subset::chunk_from_winding_number(w);
+              indices = sd->painter_data().index_data_chunk(index_chunk);
+
+              dst_d->m_index_chunks.push_back(DataWriterPrivate::per_index_chunk(indices, attrib_chunk));
+            }
+        }
+    }
+
 }

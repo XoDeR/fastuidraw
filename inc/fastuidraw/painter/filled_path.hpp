@@ -70,7 +70,7 @@ public:
     painter_data(void) const;
 
     /*!
-      Returns an array listing what winding number values
+      Return a sorted array listing what winding number values
       there are triangle in this Subset. To get the indices
       for those triangle with winding number N, use the chunk
       computed from chunk_from_winding_number(N). The same attribute
@@ -135,9 +135,16 @@ public:
   {
   public:
     DataWriter(void);
+    DataWriter(const DataWriter &obj);
 
     virtual
     ~DataWriter();
+
+    const DataWriter&
+    operator=(const DataWriter &rhs);
+
+    void
+    swap(DataWriter &obj);
 
     virtual
     unsigned int
