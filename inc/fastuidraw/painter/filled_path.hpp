@@ -256,6 +256,33 @@ public:
                  unsigned int max_attribute_cnt,
                  unsigned int max_index_cnt,
                  DataWriter &dst) const;
+
+  /*!
+    Compute a DataWriter value for the purposes of filling
+    a path against a fill rule WITH anti-aliasing applied.
+    \param scratch_space scratch space for computations.
+    \param fill_rule fill rule to apply to path
+    \param clip_equations array of clip equations
+    \param clip_matrix_local 3x3 transformation from local (x, y, 1)
+                             coordinates to clip coordinates.
+    \param max_attribute_cnt make so that the returned DataWriter
+                             written to dst has that each attribute
+                             chunk has no more than max_attribute_cnt
+                             attributes.
+    \param max_index_cnt make so that the returned DataWriter
+                         written to dst has that each index
+                         chunk has no more than max_index_cnt
+                         indices.
+    \param dst[output] location to which to write the DataWriter value
+   */
+  void
+  compute_writer(ScratchSpace &scratch_space,
+                 enum PainterEnums::fill_rule_t fill_rule,
+                 const_c_array<vec3> clip_equations,
+                 const float3x3 &clip_matrix_local,
+                 unsigned int max_attribute_cnt,
+                 unsigned int max_index_cnt,
+                 DataWriter &dst) const;
 private:
   void *m_d;
 };

@@ -335,7 +335,8 @@ void
 fastuidraw::PainterBackend::
 register_shader(const PainterFillShader &p)
 {
-  register_shader(p.item_shader());
+  register_shader(p.aa_shader());
+  register_shader(p.non_aa_shader());
 }
 
 void

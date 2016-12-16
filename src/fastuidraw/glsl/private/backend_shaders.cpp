@@ -412,18 +412,29 @@ ShaderSetCreator::
 create_fill_shader(void)
 {
   PainterFillShader fill_shader;
-  varying_list varyings;
 
-  varyings.add_float_varying("fastuidraw_stroking_on_boundary");
   fill_shader
-    .item_shader(FASTUIDRAWnew PainterItemShaderGLSL(false,
-                                                     ShaderSource()
-                                                     .add_source("fastuidraw_painter_fill.vert.glsl.resource_string",
-                                                                 ShaderSource::from_resource),
-                                                     ShaderSource()
-                                                     .add_source("fastuidraw_painter_fill.frag.glsl.resource_string",
-                                                                 ShaderSource::from_resource),
-                                                     varyings));;
+    .aa_shader(FASTUIDRAWnew PainterItemShaderGLSL(false,
+                                                   ShaderSource()
+                                                   .add_macro("FASTUIDRAW_FILL_SHADER_AA")
+                                                   .add_source("fastuidraw_painter_fill.vert.glsl.resource_string",
+                                                               ShaderSource::from_resource)
+                                                   .remove_macro("FASTUIDRAW_FILL_SHADER_AA"),
+                                                   ShaderSource()
+                                                   .add_macro("FASTUIDRAW_FILL_SHADER_AA")
+                                                   .add_source("fastuidraw_painter_fill.frag.glsl.resource_string",
+                                                               ShaderSource::from_resource)
+                                                   .remove_macro("FASTUIDRAW_FILL_SHADER_AA"),
+                                                   varying_list().add_float_varying("fastuidraw_painter_fill_inside")))
+
+    .non_aa_shader(FASTUIDRAWnew PainterItemShaderGLSL(false,
+                                                       ShaderSource()
+                                                       .add_source("fastuidraw_painter_fill.vert.glsl.resource_string",
+                                                                   ShaderSource::from_resource),
+                                                       ShaderSource()
+                                                       .add_source("fastuidraw_painter_fill.frag.glsl.resource_string",
+                                                                   ShaderSource::from_resource),
+                                                       varying_list()));
   return fill_shader;
 }
 

@@ -23,7 +23,8 @@ namespace
   class PainterFillShaderPrivate
   {
   public:
-    fastuidraw::reference_counted_ptr<fastuidraw::PainterItemShader> m_item_shader;
+    fastuidraw::reference_counted_ptr<fastuidraw::PainterItemShader> m_aa_shader;
+    fastuidraw::reference_counted_ptr<fastuidraw::PainterItemShader> m_non_aa_shader;
   };
 }
 
@@ -66,6 +67,17 @@ operator=(const PainterFillShader &rhs)
   return *this;
 }
 
+
+const fastuidraw::reference_counted_ptr<fastuidraw::PainterItemShader>&
+fastuidraw::PainterFillShader::
+shader(bool with_aa) const
+{
+  return with_aa ?
+    aa_shader() :
+    non_aa_shader();
+}
+
+
 #define setget_implement(type, name)                                \
   fastuidraw::PainterFillShader&                                    \
   fastuidraw::PainterFillShader::                                   \
@@ -86,5 +98,6 @@ operator=(const PainterFillShader &rhs)
     return d->m_##name;                                             \
   }
 
-setget_implement(const fastuidraw::reference_counted_ptr<fastuidraw::PainterItemShader>&, item_shader)
+setget_implement(const fastuidraw::reference_counted_ptr<fastuidraw::PainterItemShader>&, aa_shader)
+setget_implement(const fastuidraw::reference_counted_ptr<fastuidraw::PainterItemShader>&, non_aa_shader)
 #undef setget_implement

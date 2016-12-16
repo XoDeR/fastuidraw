@@ -55,17 +55,37 @@ namespace fastuidraw
     operator=(const PainterFillShader &rhs);
 
     /*!
-      Returns the PainterItemShader to use.
+      Returns the PainterItemShader to fill with anti-aliasing
      */
     const reference_counted_ptr<PainterItemShader>&
-    item_shader(void) const;
+    aa_shader(void) const;
 
     /*!
-      Set the value returned by item_shader(void) const.
+      Set the value returned by aa_shader(void) const.
       \param sh value to use
      */
     PainterFillShader&
-    item_shader(const reference_counted_ptr<PainterItemShader> &sh);
+    aa_shader(const reference_counted_ptr<PainterItemShader> &sh);
+
+    /*!
+      Returns the PainterItemShader to fill without anti-aliasing
+     */
+    const reference_counted_ptr<PainterItemShader>&
+    non_aa_shader(void) const;
+
+    /*!
+      Set the value returned by non_aa_shader(void) const.
+      \param sh value to use
+     */
+    PainterFillShader&
+    non_aa_shader(const reference_counted_ptr<PainterItemShader> &sh);
+
+    /*!
+      Provided as a convenience
+      \param with_aa if true, return aa_shader(void) otherwise return non_aa_shader(void)
+     */
+    const reference_counted_ptr<PainterItemShader>&
+    shader(bool with_aa) const;
 
   private:
     void *m_d;

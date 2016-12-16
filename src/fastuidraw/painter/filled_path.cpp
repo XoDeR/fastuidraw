@@ -171,6 +171,30 @@ namespace CoordinateConverterConstants
 
 namespace
 {
+  bool
+  fcn_non_zero_fill_rule(int w)
+  {
+    return w != 0;
+  }
+
+  bool
+  fcn_complelemt_non_zero_fill_rule(int w)
+  {
+    return w == 0;
+  }
+
+  bool
+  fcn_odd_even_fill_rule(int w)
+  {
+    return fastuidraw::t_abs(w) % 2 == 1;
+  }
+
+  bool
+  fcn_complement_odd_even_fill_rule(int w)
+  {
+    return w % 2 == 0;
+  }
+
   class per_winding_data:
     public fastuidraw::reference_counted<per_winding_data>::non_concurrent
   {
@@ -3042,4 +3066,41 @@ compute_writer(ScratchSpace &scratch_space,
         }
     }
 
+}
+
+void
+fastuidraw::FilledPath::
+compute_writer(ScratchSpace &scratch_space,
+               const PainterEnums::fill_rule_t fill_rule,
+               const_c_array<vec3> clip_equations,
+               const float3x3 &clip_matrix_local,
+               unsigned int max_attribute_cnt,
+               unsigned int max_index_cnt,
+               DataWriter &dst) const
+{
+  bool (*fcn)(int);
+
+  switch(fill_rule)
+    {
+    case PainterEnums::nonzero_fill_rule:
+      fcn = fcn_non_zero_fill_rule;
+      break;
+    case PainterEnums::complement_nonzero_fill_rule:
+      fcn = fcn_complelemt_non_zero_fill_rule;
+      break;
+    case PainterEnums::odd_even_fill_rule:
+      fcn = fcn_odd_even_fill_rule;
+      break;
+    case PainterEnums::complement_odd_even_fill_rule:
+      fcn = fcn_complement_odd_even_fill_rule;
+      break;
+
+    default:
+      assert(!"Invalid fill rule enumeration, using non-zero");
+      fcn = fcn_non_zero_fill_rule;
+    }
+
+  compute_writer(scratch_space, CustomFillRuleFunction(fcn),
+                 clip_equations, clip_matrix_local,
+                 max_attribute_cnt, max_index_cnt, dst);
 }
