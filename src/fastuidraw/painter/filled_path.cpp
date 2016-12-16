@@ -163,7 +163,7 @@ namespace CoordinateConverterConstants
 {
   enum
     {
-      log2_box_dim = 24,
+      log2_box_dim = 22,
       negative_log2_fudge = 20,
       box_dim = (1 << log2_box_dim),
     };
@@ -476,8 +476,9 @@ namespace
 
     // set to encode the -complement- of the passed fill rule.
     void
-    extract_compliment_from_fill_fule(int min_value, int max_value,
-                                      const fastuidraw::CustomFillRuleBase &fill_rule);
+    extract_from_fill_fule(int min_value, int max_value,
+                           const fastuidraw::CustomFillRuleBase &fill_rule,
+                           bool flip);
 
     void
     extract_from_set(const std::set<int> &in_values);
@@ -629,6 +630,14 @@ namespace
 
     void
     add_bounding_box_path_element(const fastuidraw::uvec4 &box);
+
+    void
+    add_triangle(unsigned int a, unsigned int b, unsigned int c)
+    {
+      add_vertex_to_polygon(a);
+      add_vertex_to_polygon(b);
+      add_vertex_to_polygon(c);
+    }
 
     static
     void
@@ -853,7 +862,7 @@ namespace
     {
       fastuidraw::PainterAttribute dst;
 
-      dst.m_attrib0 = fastuidraw::pack_vec4(src.m_pt.x(), src.m_pt.y(), 0.0f, 0.0f);
+      dst.m_attrib0 = fastuidraw::pack_vec4(src.m_pt.x(), src.m_pt.y(), 1.0f, 0.0f);
       dst.m_attrib1 = fastuidraw::uvec4(0u, 0u, 0u, 0u);
       dst.m_attrib2 = fastuidraw::uvec4(0u, 0u, 0u, 0u);
 
@@ -1003,7 +1012,7 @@ namespace
     std::vector<unsigned int> m_subset_selector;
     std::vector<per_attrib_chunk> m_attribute_chunks;
     std::vector<per_index_chunk> m_index_chunks;
-    WindingSet m_complement_winding_rule;
+    WindingSet m_complement_winding_rule, m_winding_rule;
   };
 
   class FilledPathPrivate
@@ -1820,20 +1829,40 @@ vertex_callBack(unsigned int vertex_id, void *tess)
           fastuidraw::vec2 p0(p->m_points[p->m_temp_verts[0]]);
           fastuidraw::vec2 p1(p->m_points[p->m_temp_verts[1]]);
           fastuidraw::vec2 p2(p->m_points[p->m_temp_verts[2]]);
-          fastuidraw::vec2 c;
-          unsigned int ic;
+          fastuidraw::vec2 m01, m02, m12, c;
+          unsigned int i01, i02, i12, ic;
 
+          m01 = 0.5f * (p0 + p1);
+          m02 = 0.5f * (p0 + p2);
+          m12 = 0.5f * (p1 + p2);
           c = (p0 + p1 + p2) / 3.0f;
+
+          i01 = p->m_points.fetch(m01);
+          i02 = p->m_points.fetch(m02);
+          i12 = p->m_points.fetch(m12);
           ic = p->m_points.fetch(c);
 
-          /* add 3 triangles: [c, p1, p2], [p0, c, p2] and [p0, p1, c]
+          /* add 6 triangles:
+              [p0, m01, c]
+              [p0, m02, c]
+              [m01, p1, c]
+              [c, p1, m12]
+              [m02, c, p2]
+              [c, m12, p2]
+
+             These 6 triangles are added to guarnantee
+             that the all of the interior of a marked
+             triangle should have that the coverage
+             is non-zero even if all the original vertices
+             with which it shares are with triangles from
+             another winding number.
            */
-          for(unsigned int t = 0; t < 3; ++t)
-            {
-              p->add_vertex_to_polygon((t != 0) ? p->m_temp_verts[0] : ic);
-              p->add_vertex_to_polygon((t != 1) ? p->m_temp_verts[1] : ic);
-              p->add_vertex_to_polygon((t != 2) ? p->m_temp_verts[2] : ic);
-            }
+          p->add_triangle(p->m_temp_verts[0], i01, ic);
+          p->add_triangle(p->m_temp_verts[0], ic, i02);
+          p->add_triangle(ic, p->m_temp_verts[1], i12);
+          p->add_triangle(i01, p->m_temp_verts[1], ic);
+          p->add_triangle(i02, ic, p->m_temp_verts[2]);
+          p->add_triangle(ic, i12, p->m_temp_verts[2]);
         }
     }
 }
@@ -2318,8 +2347,9 @@ fill_winding_data(std::vector<WindingSet> &dst) const
 // WindingSet methods
 void
 WindingSet::
-extract_compliment_from_fill_fule(int min_value, int max_value,
-                                  const fastuidraw::CustomFillRuleBase &fill_rule)
+extract_from_fill_fule(int min_value, int max_value,
+                       const fastuidraw::CustomFillRuleBase &fill_rule,
+                       bool flip)
 {
   m_begin = min_value;
   m_end = max_value + 1;
@@ -2328,7 +2358,7 @@ extract_compliment_from_fill_fule(int min_value, int max_value,
   m_bits.resize(m_end - m_begin, false);
   for(int w = m_begin; w < m_end; ++w)
     {
-      m_bits.set(w - m_begin, !fill_rule(w));
+      m_bits.set(w - m_begin, fill_rule(w) != flip);
     }
 }
 
@@ -3026,7 +3056,8 @@ compute_writer(ScratchSpace &scratch_space,
       max_winding = t_max(max_winding, S.winding_numbers().back());
     }
 
-  dst_d->m_complement_winding_rule.extract_compliment_from_fill_fule(min_winding, max_winding, fill_rule);
+  dst_d->m_winding_rule.extract_from_fill_fule(min_winding, max_winding, fill_rule, false);
+  dst_d->m_complement_winding_rule.extract_from_fill_fule(min_winding, max_winding, fill_rule, true);
   dst_d->m_attribute_chunks.reserve(num);
   dst_d->m_index_chunks.reserve(num);
 
@@ -3047,7 +3078,7 @@ compute_writer(ScratchSpace &scratch_space,
           int w;
 
           w = windings[i];
-          if(!dst_d->m_complement_winding_rule.has(w))
+          if(dst_d->m_winding_rule.has(w))
             {
               unsigned int index_chunk;
               const_c_array<PainterIndex> indices;
